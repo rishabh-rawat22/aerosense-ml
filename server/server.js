@@ -11,7 +11,6 @@ const aqiRoutes = require("./routes/aqiRoutes");
 
 // Connect to MongoDB then start the CPCB hourly sync
 connectDB().then(() => {
-  // Make sure your file in the /jobs folder is named syncCPCB.js
   const { startCronJob } = require("./jobs/syncCPCB");
   startCronJob();
 });
@@ -22,7 +21,10 @@ const app = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      process.env.CLIENT_URL,
+    ].filter(Boolean),
     credentials: true,
   }),
 );
