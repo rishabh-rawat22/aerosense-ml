@@ -1,13 +1,5 @@
 /**
  * openaqService.js
- * ─────────────────────────────────────────────────────────────────────────────
- * Fetches real AQI data for India from WAQI (World Air Quality Index).
- * API: https://aqicn.org/api/
- * Free token: https://aqicn.org/data-platform/token/
- *
- * Strategy: fetch all stations inside India's geographic bounding box.
- * India bounds: lat 6.5–37.5, lon 68–97.5
- * The /map/bounds endpoint returns every station in that rectangle.
  */
 
 const axios = require("axios");
@@ -15,7 +7,7 @@ const mongoose = require("mongoose");
 const logger = require("../config/logger");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MONGOOSE SCHEMA & MODEL
+// MONGOOSE SCHEMA & MODEL — current station data
 // ─────────────────────────────────────────────────────────────────────────────
 
 const locationAQISchema = new mongoose.Schema(
@@ -45,10 +37,7 @@ const locationAQISchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Compound index for dashboard queries
 locationAQISchema.index({ city: 1, recordedAt: -1 });
-
-// TTL — auto-delete records older than 60 days
 locationAQISchema.index(
   { recordedAt: 1 },
   { expireAfterSeconds: 60 * 24 * 60 * 60 },
@@ -57,6 +46,35 @@ locationAQISchema.index(
 const LocationAQI =
   mongoose.models.LocationAQI ||
   mongoose.model("LocationAQI", locationAQISchema);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAILY SNAPSHOT SCHEMA — one record per city per day (powers 30-day chart)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const dailySnapshotSchema = new mongoose.Schema(
+  {
+    city: { type: String, required: true, trim: true },
+    date: { type: String, required: true }, // "YYYY-MM-DD"
+    actual: { type: Number, default: null },
+    predicted: { type: Number, default: null }, // filled by ML later
+    pollutants: {
+      pm25: { type: Number, default: null },
+      pm10: { type: Number, default: null },
+      no2: { type: Number, default: null },
+      so2: { type: Number, default: null },
+      co: { type: Number, default: null },
+      o3: { type: Number, default: null },
+    },
+    stationCount: { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+
+dailySnapshotSchema.index({ city: 1, date: -1 }, { unique: true });
+
+const DailySnapshot =
+  mongoose.models.DailySnapshot ||
+  mongoose.model("DailySnapshot", dailySnapshotSchema);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AQI CATEGORY (India NAQI scale)
@@ -79,7 +97,6 @@ const aqiToCategory = (aqi) => {
   return "Severe";
 };
 
-// PM2.5 → AQI using India NAQI breakpoints (used as fallback)
 const PM25_BREAKPOINTS = [
   [0, 30, 0, 50],
   [30, 60, 51, 100],
@@ -103,8 +120,6 @@ const pm25ToAQI = (pm25) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FETCH FROM WAQI
-// /map/bounds returns all stations inside a lat/lon bounding box.
-// India bounding box: lat 6.5,68 to 37.5,97.5
 // ─────────────────────────────────────────────────────────────────────────────
 
 const fetchWAQI = async () => {
@@ -130,10 +145,7 @@ const fetchWAQI = async () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FETCH STATION DETAIL (pollutant breakdown)
-// The /map/bounds endpoint only gives AQI. To get PM2.5, PM10 etc.
-// we call /feed/@{uid}/ for each station. We do this for the top 200
-// stations only (to avoid rate limits) — the rest get AQI only.
+// FETCH STATION DETAIL
 // ─────────────────────────────────────────────────────────────────────────────
 
 const fetchStationDetail = async (uid) => {
@@ -163,12 +175,13 @@ const transformStation = (raw, detail = null) => {
     nameParts.length >= 3 &&
     nameParts[nameParts.length - 1].toLowerCase() === "india"
   ) {
-    city = nameParts[nameParts.length - 2]; // e.g. "Delhi"
+    city = nameParts[nameParts.length - 2];
   } else if (nameParts.length >= 2) {
-    city = nameParts[nameParts.length - 1]; // fallback
+    city = nameParts[nameParts.length - 1];
   } else {
     city = nameParts[0];
   }
+
   const iaqi = detail?.iaqi || {};
   const getIaqi = (key) =>
     iaqi[key]?.v != null ? parseFloat(iaqi[key].v) : null;
@@ -199,8 +212,81 @@ const transformStation = (raw, detail = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SAVE DAILY SNAPSHOTS — called after every sync
+// Groups stations by city and saves one averaged record per city per day
+// ─────────────────────────────────────────────────────────────────────────────
+
+const saveDailySnapshots = async (documents) => {
+  const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+
+  const byCity = {};
+  for (const doc of documents) {
+    if (!doc.city || !doc.aqi) continue;
+    if (!byCity[doc.city]) byCity[doc.city] = [];
+    byCity[doc.city].push(doc);
+  }
+
+  const ops = Object.entries(byCity).map(([city, docs]) => {
+    const avgAQI = Math.round(
+      docs.reduce((s, d) => s + d.aqi, 0) / docs.length,
+    );
+
+    const avgPollutant = (key) => {
+      const vals = docs
+        .map((d) => d.pollutants?.[key])
+        .filter((v) => v != null);
+      return vals.length
+        ? parseFloat((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2))
+        : null;
+    };
+
+    return {
+      updateOne: {
+        filter: { city, date: today },
+        update: {
+          $set: {
+            city,
+            date: today,
+            actual: avgAQI,
+            pollutants: {
+              pm25: avgPollutant("pm25"),
+              pm10: avgPollutant("pm10"),
+              no2: avgPollutant("no2"),
+              so2: avgPollutant("so2"),
+              co: avgPollutant("co"),
+              o3: avgPollutant("o3"),
+            },
+            stationCount: docs.length,
+          },
+        },
+        upsert: true,
+      },
+    };
+  });
+
+  if (ops.length) {
+    await DailySnapshot.bulkWrite(ops, { ordered: false });
+    logger.info(`📸 Daily snapshots saved for ${ops.length} cities`);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET 30-DAY SNAPSHOTS — used by the history controller
+// ─────────────────────────────────────────────────────────────────────────────
+
+const get30DaySnapshots = async (city) => {
+  const rx = new RegExp(`^${city.trim()}$`, "i");
+  const cutoff = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  return DailySnapshot.find({ city: rx, date: { $gte: cutoff } })
+    .sort({ date: 1 })
+    .lean();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN EXPORT: syncOpenAQData()
-// Named syncOpenAQData so the cron job doesn't need renaming.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const syncOpenAQData = async () => {
@@ -214,7 +300,6 @@ const syncOpenAQData = async () => {
     return { synced: 0, elapsed: "0s" };
   }
 
-  // Fetch detail for top 200 stations sorted by AQI descending
   const withAQI = stations.filter((s) => parseInt(s.aqi) > 0);
   const top200 = withAQI.slice(0, 200);
 
@@ -263,6 +348,9 @@ const syncOpenAQData = async () => {
     const result = await LocationAQI.bulkWrite(batch, { ordered: false });
     totalSynced += result.upsertedCount + result.modifiedCount;
   }
+
+  // Save daily snapshot for the 30-day history chart
+  await saveDailySnapshots(documents);
 
   const elapsed = `${((Date.now() - t0) / 1000).toFixed(1)}s`;
   logger.info(`✅ WAQI sync complete — ${totalSynced} records in ${elapsed}`);
@@ -335,6 +423,9 @@ module.exports = {
   getLatestForCity,
   getActiveCities,
   LocationAQI,
+  DailySnapshot,
   pm25ToAQI,
   aqiToCategory,
+  saveDailySnapshots,
+  get30DaySnapshots,
 };
