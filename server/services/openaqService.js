@@ -48,14 +48,17 @@ const LocationAQI =
   mongoose.model("LocationAQI", locationAQISchema);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DAILY SNAPSHOT SCHEMA — one record per city per day (powers 30-day chart)
+// HOURLY SNAPSHOT SCHEMA — one record per city per hour
+// Powers the 10-day hourly chart (240 points)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const dailySnapshotSchema = new mongoose.Schema(
+const hourlySnapshotSchema = new mongoose.Schema(
   {
     city: { type: String, required: true, trim: true },
     date: { type: String, required: true }, // "YYYY-MM-DD"
-    actual: { type: Number, default: null },
+    hour: { type: Number, required: true }, // 0-23
+    timestamp: { type: Date, required: true }, // exact hour datetime
+    actual: { type: Number, default: null }, // avg AQI for that hour
     predicted: { type: Number, default: null }, // filled by ML later
     pollutants: {
       pm25: { type: Number, default: null },
@@ -70,11 +73,18 @@ const dailySnapshotSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-dailySnapshotSchema.index({ city: 1, date: -1 }, { unique: true });
+// One record per city per hour
+hourlySnapshotSchema.index({ city: 1, date: 1, hour: 1 }, { unique: true });
 
-const DailySnapshot =
-  mongoose.models.DailySnapshot ||
-  mongoose.model("DailySnapshot", dailySnapshotSchema);
+// Auto-delete records older than 11 days
+hourlySnapshotSchema.index(
+  { timestamp: 1 },
+  { expireAfterSeconds: 11 * 24 * 60 * 60 },
+);
+
+const HourlySnapshot =
+  mongoose.models.HourlySnapshot ||
+  mongoose.model("HourlySnapshot", hourlySnapshotSchema);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AQI CATEGORY (India NAQI scale)
@@ -128,10 +138,7 @@ const fetchWAQI = async () => {
 
   const url = `https://api.waqi.info/map/bounds/`;
   const response = await axios.get(url, {
-    params: {
-      latlng: "6.5,68,37.5,97.5",
-      token,
-    },
+    params: { latlng: "6.5,68,37.5,97.5", token },
     timeout: 25000,
   });
 
@@ -212,13 +219,21 @@ const transformStation = (raw, detail = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SAVE DAILY SNAPSHOTS — called after every sync
-// Groups stations by city and saves one averaged record per city per day
+// SAVE HOURLY SNAPSHOTS — called after every sync
+// Groups stations by city, saves one averaged record per city per hour
+// Uses upsert so multiple syncs in the same hour just update the same record
 // ─────────────────────────────────────────────────────────────────────────────
 
-const saveDailySnapshots = async (documents) => {
-  const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+const saveHourlySnapshots = async (documents) => {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const hour = now.getUTCHours(); // 0-23
 
+  // Round timestamp to current hour
+  const timestamp = new Date(now);
+  timestamp.setUTCMinutes(0, 0, 0);
+
+  // Group by city
   const byCity = {};
   for (const doc of documents) {
     if (!doc.city || !doc.aqi) continue;
@@ -242,11 +257,13 @@ const saveDailySnapshots = async (documents) => {
 
     return {
       updateOne: {
-        filter: { city, date: today },
+        filter: { city, date, hour },
         update: {
           $set: {
             city,
-            date: today,
+            date,
+            hour,
+            timestamp,
             actual: avgAQI,
             pollutants: {
               pm25: avgPollutant("pm25"),
@@ -265,23 +282,24 @@ const saveDailySnapshots = async (documents) => {
   });
 
   if (ops.length) {
-    await DailySnapshot.bulkWrite(ops, { ordered: false });
-    logger.info(`📸 Daily snapshots saved for ${ops.length} cities`);
+    await HourlySnapshot.bulkWrite(ops, { ordered: false });
+    logger.info(
+      `📸 Hourly snapshots saved for ${ops.length} cities (${date} hour ${hour})`,
+    );
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET 30-DAY SNAPSHOTS — used by the history controller
+// GET 10-DAY HOURLY SNAPSHOTS — used by history controller
+// Returns up to 240 points (10 days × 24 hours)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const get30DaySnapshots = async (city) => {
+const get10DayHourlySnapshots = async (city) => {
   const rx = new RegExp(`^${city.trim()}$`, "i");
-  const cutoff = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 
-  return DailySnapshot.find({ city: rx, date: { $gte: cutoff } })
-    .sort({ date: 1 })
+  return HourlySnapshot.find({ city: rx, timestamp: { $gte: cutoff } })
+    .sort({ timestamp: 1 })
     .lean();
 };
 
@@ -349,8 +367,8 @@ const syncOpenAQData = async () => {
     totalSynced += result.upsertedCount + result.modifiedCount;
   }
 
-  // Save daily snapshot for the 30-day history chart
-  await saveDailySnapshots(documents);
+  // Save hourly snapshot for the 10-day chart
+  await saveHourlySnapshots(documents);
 
   const elapsed = `${((Date.now() - t0) / 1000).toFixed(1)}s`;
   logger.info(`✅ WAQI sync complete — ${totalSynced} records in ${elapsed}`);
@@ -423,9 +441,9 @@ module.exports = {
   getLatestForCity,
   getActiveCities,
   LocationAQI,
-  DailySnapshot,
+  HourlySnapshot,
   pm25ToAQI,
   aqiToCategory,
-  saveDailySnapshots,
-  get30DaySnapshots,
+  saveHourlySnapshots,
+  get10DayHourlySnapshots,
 };

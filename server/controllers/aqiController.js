@@ -3,7 +3,7 @@ const {
   getActiveCities,
   LocationAQI,
   aqiToCategory,
-  get30DaySnapshots,
+  get10DayHourlySnapshots,
 } = require("../services/openaqService");
 const { get48HourForecast } = require("../services/mlService");
 const cache = require("../config/cache");
@@ -15,7 +15,6 @@ const TTL = {
   history: parseInt(process.env.CACHE_TTL_HISTORY) || 3600,
 };
 
-// ── AQI category enriched with color + risk ───────────────────────────────────
 const CATEGORY_META = {
   Good: { color: "#22c55e", risk: "low" },
   Satisfactory: { color: "#84cc16", risk: "low" },
@@ -27,19 +26,26 @@ const CATEGORY_META = {
 
 const getCategory = (aqi) => {
   const label = aqiToCategory(aqi);
-  return { label, ...(CATEGORY_META[label] || { color: "#6b7280", risk: "unknown" }) };
+  return {
+    label,
+    ...(CATEGORY_META[label] || { color: "#6b7280", risk: "unknown" }),
+  };
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 const extractLocation = (query) => {
   const { district, lat, lon } = query;
 
   if (district) {
     const c = district.trim();
-    if (c.length < 2) throw { status: 400, message: "District name is too short." };
-    if (c.length > 80) throw { status: 400, message: "District name is too long." };
+    if (c.length < 2)
+      throw { status: 400, message: "District name is too short." };
+    if (c.length > 80)
+      throw { status: 400, message: "District name is too long." };
     if (/[^a-zA-Z\s\-'.]/.test(c))
-      throw { status: 400, message: "District name contains invalid characters." };
+      throw {
+        status: 400,
+        message: "District name contains invalid characters.",
+      };
     return { district: c, lat: null, lon: null };
   }
 
@@ -49,14 +55,19 @@ const extractLocation = (query) => {
     if (isNaN(la) || isNaN(lo))
       throw { status: 400, message: "Coordinates must be valid numbers." };
     if (la < 6.5 || la > 37.5 || lo < 68 || lo > 97.5)
-      throw { status: 400, message: "Coordinates are outside India's geographic boundaries." };
+      throw {
+        status: 400,
+        message: "Coordinates are outside India's geographic boundaries.",
+      };
     return { district: null, lat: la, lon: lo };
   }
 
-  throw { status: 400, message: "Provide either ?district=Delhi or ?lat=28.6&lon=77.2" };
+  throw {
+    status: 400,
+    message: "Provide either ?district=Delhi or ?lat=28.6&lon=77.2",
+  };
 };
 
-// Find the city name for a GPS coordinate by nearest station
 const coordsToCity = async (lat, lon) => {
   const stations = await LocationAQI.find({}).select("city coordinates").lean();
   if (!stations.length) return "Delhi";
@@ -73,13 +84,16 @@ const coordsToCity = async (lat, lon) => {
   return nearest.city || "Delhi";
 };
 
-// 30-day daily history using DailySnapshot collection
-const get30DayHistory = async (city) => {
-  const snapshots = await get30DaySnapshots(city);
+// 10-day hourly history — up to 240 points
+const get10DayHistory = async (city) => {
+  const snapshots = await get10DayHourlySnapshots(city);
   return snapshots.map((s) => ({
+    timestamp: s.timestamp, // full datetime for X axis
     date: s.date,
+    hour: s.hour,
+    label: `${s.date} ${String(s.hour).padStart(2, "0")}:00`, // "2026-04-20 14:00"
     actual: s.actual,
-    predicted: s.predicted, // null until ML model fills it in
+    predicted: s.predicted,
     dataPoints: s.stationCount,
   }));
 };
@@ -95,25 +109,29 @@ const getAdvisory = (categoryLabel) => {
     Satisfactory: {
       icon: "🟡",
       general: "Air quality is acceptable for most people.",
-      sensitive: "Unusually sensitive individuals may experience mild discomfort.",
+      sensitive:
+        "Unusually sensitive individuals may experience mild discomfort.",
       outdoor: "Suitable for moderate outdoor activity.",
     },
     Moderate: {
       icon: "🟠",
       general: "Sensitive groups may experience health effects.",
-      sensitive: "People with heart or lung disease, elderly and children should reduce exertion.",
+      sensitive:
+        "People with heart or lung disease, elderly and children should reduce exertion.",
       outdoor: "Consider reducing intense outdoor activity.",
     },
     Poor: {
       icon: "🔴",
       general: "Everyone may begin to experience health effects.",
-      sensitive: "Wear N95 masks outdoors. Sensitive groups should stay indoors.",
+      sensitive:
+        "Wear N95 masks outdoors. Sensitive groups should stay indoors.",
       outdoor: "Avoid prolonged outdoor exertion. Keep windows closed.",
     },
     "Very Poor": {
       icon: "🟤",
       general: "Health warnings for the entire population.",
-      sensitive: "Stay indoors and keep activity low. Serious health effects possible.",
+      sensitive:
+        "Stay indoors and keep activity low. Serious health effects possible.",
       outdoor: "Avoid all outdoor physical activity. Use air purifiers.",
     },
     Severe: {
@@ -170,7 +188,10 @@ const getCurrentAQI = async (req, res) => {
     cache.set(cKey, data, TTL.current);
     res.json({ success: true, data });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ success: false, error: err.message });
+    if (err.status)
+      return res
+        .status(err.status)
+        .json({ success: false, error: err.message });
     logger.error("getCurrentAQI:", err);
     res.status(500).json({ success: false, error: "Server error." });
   }
@@ -188,7 +209,9 @@ const getForecast = async (req, res) => {
 
     const reading = await getLatestForCity(district);
     if (!reading)
-      return res.status(404).json({ success: false, error: `No data for "${district}".` });
+      return res
+        .status(404)
+        .json({ success: false, error: `No data for "${district}".` });
 
     const forecast = await get48HourForecast(
       district,
@@ -203,14 +226,19 @@ const getForecast = async (req, res) => {
       state: reading.state || "",
       baseAQI: reading.aqi,
       forecast: forecast.map((f) => ({ ...f, category: getCategory(f.aqi) })),
-      modelType: process.env.ML_SERVICE_URL ? "ml_model" : "statistical_baseline",
+      modelType: process.env.ML_SERVICE_URL
+        ? "ml_model"
+        : "statistical_baseline",
       generatedAt: new Date().toISOString(),
     };
 
     cache.set(cKey, data, TTL.forecast);
     res.json({ success: true, data });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ success: false, error: err.message });
+    if (err.status)
+      return res
+        .status(err.status)
+        .json({ success: false, error: err.message });
     logger.error("getForecast:", err);
     res.status(500).json({ success: false, error: "Server error." });
   }
@@ -228,26 +256,27 @@ const getHistoricalData = async (req, res) => {
         district = loc.district;
       }
     } catch (e) {
-      return res.status(e.status || 400).json({ success: false, error: e.message });
+      return res
+        .status(e.status || 400)
+        .json({ success: false, error: e.message });
     }
 
     const cKey = `history:${district.toLowerCase()}`;
     const cached = cache.get(cKey);
     if (cached) return res.json({ success: true, data: cached, cached: true });
 
-    const history = await get30DayHistory(district);
+    const history = await get10DayHistory(district);
     if (!history.length) {
       return res.status(404).json({
         success: false,
         error: `No historical data for "${district}" yet.`,
-        hint: "Data accumulates daily after each sync. Check back tomorrow.",
+        hint: "Data accumulates hourly. Check back after the next sync.",
       });
     }
 
     const data = {
       district,
       history,
-      avgAccuracy: null,
       dataPoints: history.length,
       source: "WAQI via Aerosense",
     };
@@ -259,7 +288,7 @@ const getHistoricalData = async (req, res) => {
   }
 };
 
-// GET /api/aqi/dashboard — single call for full page load
+// GET /api/aqi/dashboard
 const getDashboard = async (req, res) => {
   try {
     let { district, lat, lon } = extractLocation(req.query);
@@ -286,7 +315,7 @@ const getDashboard = async (req, res) => {
         reading.coordinates?.lat,
         reading.coordinates?.lon,
       ),
-      get30DayHistory(district),
+      get10DayHistory(district),
     ]);
 
     const category = getCategory(reading.aqi);
@@ -308,18 +337,27 @@ const getDashboard = async (req, res) => {
           " minutes ago",
       },
       forecast: forecast.map((f) => ({ ...f, category: getCategory(f.aqi) })),
-      history: { history, avgAccuracy: null, source: "WAQI via Aerosense" },
+      history: {
+        history,
+        dataPoints: history.length,
+        source: "WAQI via Aerosense",
+      },
       meta: {
         source: "WAQI",
         generatedAt: new Date().toISOString(),
-        modelStatus: process.env.ML_SERVICE_URL ? "ml_connected" : "statistical_baseline",
+        modelStatus: process.env.ML_SERVICE_URL
+          ? "ml_connected"
+          : "statistical_baseline",
       },
     };
 
     cache.set(cKey, data, TTL.current);
     res.json({ success: true, data });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ success: false, error: err.message });
+    if (err.status)
+      return res
+        .status(err.status)
+        .json({ success: false, error: err.message });
     logger.error("getDashboard:", err);
     res.status(500).json({ success: false, error: "Server error." });
   }
@@ -367,7 +405,7 @@ const getStations = async (req, res) => {
   }
 };
 
-// POST /api/aqi/sync — manual trigger
+// POST /api/aqi/sync
 const triggerSync = async (req, res) => {
   try {
     const { runSync } = require("../jobs/syncCPCB");
