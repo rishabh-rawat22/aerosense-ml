@@ -48,18 +48,17 @@ const LocationAQI =
   mongoose.model("LocationAQI", locationAQISchema);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HOURLY SNAPSHOT SCHEMA — one record per city per hour
-// Powers the 10-day hourly chart (240 points)
+// HOURLY SNAPSHOT SCHEMA — one record per city per hour (IST)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const hourlySnapshotSchema = new mongoose.Schema(
   {
     city: { type: String, required: true, trim: true },
-    date: { type: String, required: true }, // "YYYY-MM-DD"
-    hour: { type: Number, required: true }, // 0-23
-    timestamp: { type: Date, required: true }, // exact hour datetime
-    actual: { type: Number, default: null }, // avg AQI for that hour
-    predicted: { type: Number, default: null }, // filled by ML later
+    date: { type: String, required: true }, // "YYYY-MM-DD" in IST
+    hour: { type: Number, required: true }, // 0-23 in IST
+    timestamp: { type: Date, required: true }, // exact hour in IST as UTC Date
+    actual: { type: Number, default: null },
+    predicted: { type: Number, default: null },
     pollutants: {
       pm25: { type: Number, default: null },
       pm10: { type: Number, default: null },
@@ -73,10 +72,7 @@ const hourlySnapshotSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// One record per city per hour
 hourlySnapshotSchema.index({ city: 1, date: 1, hour: 1 }, { unique: true });
-
-// Auto-delete records older than 11 days
 hourlySnapshotSchema.index(
   { timestamp: 1 },
   { expireAfterSeconds: 11 * 24 * 60 * 60 },
@@ -219,21 +215,32 @@ const transformStation = (raw, detail = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IST HELPER — converts current UTC time to IST (UTC+5:30)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const getISTTime = () => {
+  const now = new Date();
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes
+  const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+
+  const date = istNow.toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const hour = istNow.getUTCHours(); // 0-23 in IST
+
+  // Round to current hour (zero out minutes/seconds)
+  const timestamp = new Date(istNow);
+  timestamp.setUTCMinutes(0, 0, 0);
+
+  return { date, hour, timestamp, istNow };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SAVE HOURLY SNAPSHOTS — called after every sync
-// Groups stations by city, saves one averaged record per city per hour
-// Uses upsert so multiple syncs in the same hour just update the same record
+// One averaged record per city per hour, stored in IST
 // ─────────────────────────────────────────────────────────────────────────────
 
 const saveHourlySnapshots = async (documents) => {
-  const now = new Date();
-  const date = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
-  const hour = now.getUTCHours(); // 0-23
+  const { date, hour, timestamp } = getISTTime();
 
-  // Round timestamp to current hour
-  const timestamp = new Date(now);
-  timestamp.setUTCMinutes(0, 0, 0);
-
-  // Group by city
   const byCity = {};
   for (const doc of documents) {
     if (!doc.city || !doc.aqi) continue;
@@ -284,14 +291,13 @@ const saveHourlySnapshots = async (documents) => {
   if (ops.length) {
     await HourlySnapshot.bulkWrite(ops, { ordered: false });
     logger.info(
-      `📸 Hourly snapshots saved for ${ops.length} cities (${date} hour ${hour})`,
+      `📸 Hourly snapshots saved for ${ops.length} cities (${date} IST hour ${hour})`,
     );
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET 10-DAY HOURLY SNAPSHOTS — used by history controller
-// Returns up to 240 points (10 days × 24 hours)
+// GET 10-DAY HOURLY SNAPSHOTS
 // ─────────────────────────────────────────────────────────────────────────────
 
 const get10DayHourlySnapshots = async (city) => {
@@ -367,7 +373,7 @@ const syncOpenAQData = async () => {
     totalSynced += result.upsertedCount + result.modifiedCount;
   }
 
-  // Save hourly snapshot for the 10-day chart
+  // Save hourly snapshot in IST
   await saveHourlySnapshots(documents);
 
   const elapsed = `${((Date.now() - t0) / 1000).toFixed(1)}s`;
