@@ -73,10 +73,10 @@ const hourlySnapshotSchema = new mongoose.Schema(
 );
 
 hourlySnapshotSchema.index({ city: 1, date: 1, hour: 1 }, { unique: true });
-hourlySnapshotSchema.index(
-  { timestamp: 1 },
-  { expireAfterSeconds: 11 * 24 * 60 * 60 },
-);
+// ML-ADDITION: Removed expireAfterSeconds TTL so HourlySnapshot data accumulates
+// indefinitely as the ML training dataset. Run the DB migration in aerosense_ml_plan.md
+// (db.hourlySnapshots.dropIndex("timestamp_1")) to remove the TTL from existing collections.
+hourlySnapshotSchema.index({ timestamp: 1 });
 
 const HourlySnapshot =
   mongoose.models.HourlySnapshot ||
