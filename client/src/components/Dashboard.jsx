@@ -128,7 +128,7 @@ const Dashboard = () => {
                 <button key={tab} className={`tab-pill ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
                   {tab === 'overview' && '📊 Overview'}
                   {tab === 'forecast' && '🔮 48h Forecast'}
-                  {tab === 'history'  && '📈 30-Day History'}
+                  {tab === 'history'  && '📈 10-Day History'}
                 </button>
               ))}
             </div>
