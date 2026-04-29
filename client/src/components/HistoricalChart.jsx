@@ -170,7 +170,7 @@ const HistoricalChart = ({ history = [], avgAccuracy, source }) => {
               dataKey="predicted"
               stroke="#38bdf8"
               strokeWidth={2}
-              dot={false}
+              dot={{ r: 2 }}
               activeDot={{ r: 4 }}
               strokeDasharray="6 2"
               connectNulls={false}
