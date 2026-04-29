@@ -13,6 +13,22 @@ const aqiRoutes = require("./routes/aqiRoutes");
 connectDB().then(() => {
   const { startCronJob } = require("./jobs/syncCPCB");
   startCronJob();
+
+  // Self-ping every 14 minutes to prevent Render free tier sleep
+  setInterval(
+    () => {
+      const http = require("http");
+      const port = process.env.PORT || 5000;
+      http
+        .get(`http://localhost:${port}/api/health`, (res) => {
+          logger.info(`Self-ping OK: ${res.statusCode}`);
+        })
+        .on("error", (err) => {
+          logger.warn(`Self-ping failed: ${err.message}`);
+        });
+    },
+    14 * 60 * 1000,
+  );
 });
 
 const app = express();
@@ -21,10 +37,7 @@ const app = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      process.env.CLIENT_URL,
-    ].filter(Boolean),
+    origin: ["http://localhost:3000", process.env.CLIENT_URL].filter(Boolean),
     credentials: true,
   }),
 );
@@ -49,7 +62,7 @@ app.get("/api/health", (req, res) => {
     success: true,
     message: "Aerosense API running 🌿",
     environment: process.env.NODE_ENV,
-    dataSource: "OpenAQ — openaq.org",
+    dataSource: "WAQI — aqicn.org",
     mlModel: process.env.ML_SERVICE_URL ? "connected" : "pending_integration",
     timestamp: new Date().toISOString(),
   });
@@ -77,9 +90,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Aerosense server on port ${PORT} [${process.env.NODE_ENV}]`);
-  logger.info(
-    `📡 Data source: OpenAQ (openaq.org — free, no API key required)`,
-  );
+  logger.info(`📡 Data source: WAQI (aqicn.org)`);
 });
 
 module.exports = app;

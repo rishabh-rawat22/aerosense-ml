@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const {
   getLatestForCity,
   getActiveCities,
@@ -84,18 +85,59 @@ const coordsToCity = async (lat, lon) => {
   return nearest.city || "Delhi";
 };
 
-// 10-day hourly history — up to 240 points
+// ── Fetch ML forecast from ml_forecasts collection ────────────────────────────
+const getMLForecastMap = async (city) => {
+  try {
+    const doc = await mongoose.connection.db
+      .collection("ml_forecasts")
+      .findOne({ city: new RegExp(`^${city.trim()}$`, "i") });
+
+    if (!doc?.forecast?.length) return {};
+
+    // Build map: "YYYY-MM-DDTHH" → predicted AQI
+    const map = {};
+    for (const f of doc.forecast) {
+      const ts = new Date(f.timestamp || f.time);
+      if (!isNaN(ts)) {
+        // Convert UTC timestamp to IST key
+        const istTs = new Date(ts.getTime() + 5.5 * 60 * 60 * 1000);
+        const key = istTs.toISOString().slice(0, 13); // "2026-04-30T17"
+        map[key] = f.aqi;
+      }
+    }
+    return map;
+  } catch (err) {
+    logger.warn(`Could not fetch ml_forecasts for ${city}: ${err.message}`);
+    return {};
+  }
+};
+
+// ── 10-day hourly history merged with ML predictions ─────────────────────────
 const get10DayHistory = async (city) => {
-  const snapshots = await get10DayHourlySnapshots(city);
-  return snapshots.map((s) => ({
-    timestamp: s.timestamp, // full datetime for X axis
-    date: s.date,
-    hour: s.hour,
-    label: `${s.date} ${String(s.hour).padStart(2, "0")}:00`, // "2026-04-20 14:00"
-    actual: s.actual,
-    predicted: s.predicted,
-    dataPoints: s.stationCount,
-  }));
+  const [snapshots, predictedMap] = await Promise.all([
+    get10DayHourlySnapshots(city),
+    getMLForecastMap(city),
+  ]);
+
+  return snapshots.map((s) => {
+    // Build IST key from snapshot timestamp for lookup
+    const ts = new Date(s.timestamp);
+    const istTs = new Date(ts.getTime() + 5.5 * 60 * 60 * 1000);
+    const key = istTs.toISOString().slice(0, 13);
+
+    // Use predicted from snapshot if already stored, else from ml_forecasts map
+    const predicted = s.predicted ?? predictedMap[key] ?? null;
+
+    return {
+      timestamp: s.timestamp,
+      date: s.date,
+      hour: s.hour,
+      label: `${s.date} ${String(s.hour).padStart(2, "0")}:00`,
+      actual: s.actual,
+      predicted,
+      dataPoints: s.stationCount,
+    };
+  });
 };
 
 const getAdvisory = (categoryLabel) => {
@@ -274,10 +316,13 @@ const getHistoricalData = async (req, res) => {
       });
     }
 
+    const hasPredictions = history.some((h) => h.predicted != null);
+
     const data = {
       district,
       history,
       dataPoints: history.length,
+      hasPredictions,
       source: "WAQI via Aerosense",
     };
     cache.set(cKey, data, TTL.history);
@@ -319,6 +364,8 @@ const getDashboard = async (req, res) => {
     ]);
 
     const category = getCategory(reading.aqi);
+    const hasPredictions = history.some((h) => h.predicted != null);
+
     const data = {
       district: reading.city || district,
       state: reading.state || "",
@@ -340,6 +387,7 @@ const getDashboard = async (req, res) => {
       history: {
         history,
         dataPoints: history.length,
+        hasPredictions,
         source: "WAQI via Aerosense",
       },
       meta: {
