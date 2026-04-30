@@ -27,7 +27,15 @@ const Tip = ({ active, payload, label }) => {
 
 const HistoricalChart = ({ history = [], avgAccuracy, source }) => {
   const chartData = useMemo(() => {
-    const data = history.map((d) => ({
+    // CRITICAL: Filter out any future data points — history must only show the past
+    const now = new Date();
+    const pastOnly = history.filter((d) => {
+      if (d.timestamp) return new Date(d.timestamp) <= now;
+      if (d.label) return new Date(d.label.replace(" ", "T") + ":00") <= now;
+      return true;
+    });
+
+    const data = pastOnly.map((d) => ({
       // Use label "2026-04-20 14:00" if available, else fall back to date
       label:
         d.label ||
