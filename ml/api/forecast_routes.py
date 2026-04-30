@@ -35,6 +35,8 @@ from pydantic import BaseModel
 from loguru import logger
 from dotenv import load_dotenv
 import motor.motor_asyncio
+import pandas as pd
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
