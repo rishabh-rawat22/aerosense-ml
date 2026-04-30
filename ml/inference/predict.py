@@ -18,8 +18,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-import torch
+# Lazy-loaded imports inside functions to save memory on Render free tier
 import pandas as pd
 from pymongo import MongoClient
 from loguru import logger
@@ -43,7 +42,6 @@ CHECKPOINT_DIR = Path(os.getenv("MODEL_CHECKPOINT_DIR", str(ROOT / "models" / "c
 SCALER_DIR     = CHECKPOINT_DIR / "scalers"
 STALE_HOURS    = int(os.getenv("ML_STALE_HOURS", "24"))
 HORIZON        = 48
-DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
 IST_OFFSET     = timedelta(hours=5, minutes=30)
 
 
@@ -116,34 +114,17 @@ def fetch_recent_history(db, city: str, hours: int = SEQ_LEN + 48) -> Optional[p
 def run_inference(city: str, db) -> list[dict]:
     """
     Run a full 48-hour forecast for one city.
-
-    Steps:
-        1. Check checkpoint freshness.
-        2. Load model + scaler from disk.
-        3. Fetch recent ml_history.
-        4. Build 168-hour feature window.
-        5. Run LSTM forward pass.
-        6. Inverse-scale quantile outputs.
-        7. Return list of forecast dicts.
-
-    Args:
-        city: City name.
-        db:   PyMongo database handle.
-
-    Returns:
-        List of 48 dicts: {timestamp, hour_ist, aqi, lower, upper}.
-
-    Raises:
-        FileNotFoundError:     No checkpoint found.
-        ModelStaleError:       Checkpoint too old.
-        InsufficientDataError: Fewer than SEQ_LEN hours in ml_history.
     """
+    import torch
+    import numpy as np
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     # 1. Checkpoint freshness
     ckpt_path = _latest_checkpoint(city)
 
     # 2. Load model + scaler
     safe_city = city.lower().replace(" ", "_")
-    model     = load_checkpoint(str(ckpt_path), device=DEVICE)
+    model     = load_checkpoint(str(ckpt_path), device=device)
 
     scaler_path = SCALER_DIR / f"{safe_city}.pkl"
     scaler      = CityScaler.load(str(scaler_path))
@@ -164,7 +145,7 @@ def run_inference(city: str, db) -> list[dict]:
 
     # 5. Forward pass
     with torch.no_grad():
-        x_tensor = torch.from_numpy(window).to(DEVICE)   # (1, SEQ_LEN, N_FEATURES)
+        x_tensor = torch.from_numpy(window).to(device)   # (1, SEQ_LEN, N_FEATURES)
         preds    = model(x_tensor)                         # (1, horizon, 3)
         preds_np  = preds.cpu().numpy()[0]                 # (horizon, 3)  scaled
 
