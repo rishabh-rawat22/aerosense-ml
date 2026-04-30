@@ -28,7 +28,8 @@ const Tip = ({ active, payload, label }) => {
 const HistoricalChart = ({ history = [], avgAccuracy, source }) => {
   const chartData = useMemo(() => {
     // CRITICAL: Filter out any future data points — history must only show the past
-    const now = new Date();
+    // Shift 'now' by 5.5h to match the shifted timestamps stored in DB
+    const now = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
     const pastOnly = history.filter((d) => {
       if (d.timestamp) return new Date(d.timestamp) <= now;
       if (d.label) return new Date(d.label.replace(" ", "T") + ":00") <= now;
