@@ -26,7 +26,10 @@ const Dashboard = () => {
     try {
       const { data } = await aqiAPI.getDashboard(params);
       setDashData(data.data);
-      if (data.data?.district) updateLastDistrict(data.data.district);
+      // Only save the district to the user profile if it was detected via GPS
+      if (data.data?.district && params.lat && params.lon) {
+        updateLastDistrict(data.data.district);
+      }
     } catch (err) {
       const msg        = err.response?.data?.error || 'Failed to fetch AQI data.';
       const suggestion = err.response?.data?.suggestion || '';
