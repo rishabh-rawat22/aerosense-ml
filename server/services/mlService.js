@@ -91,7 +91,7 @@ const get48HourForecast = async (
           pollutants,
           lat,
           lon,
-          hour: new Date().getHours(),
+          hour: Math.floor(((new Date().getUTCHours() * 60 + 330) % 1440) / 60), // IST hour
           month: new Date().getMonth() + 1,
         },
         { timeout: 25000 },
