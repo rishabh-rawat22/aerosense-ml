@@ -119,10 +119,14 @@ const get10DayHistory = async (city) => {
     getMLForecastMap(city),
   ]);
 
-  // Use IST-shifted 'now' to match snapshots in DB
-  const now = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  // Get exact current IST date and hour
+  const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const currentDate = istNow.toISOString().slice(0, 10);
+  const currentHour = istNow.getUTCHours();
+
   return snapshots
-    .filter((s) => new Date(s.timestamp) <= now)
+    // Strictly filter out any point that is in the future based on date and hour
+    .filter((s) => s.date < currentDate || (s.date === currentDate && s.hour <= currentHour))
     .map((s) => {
       // Build IST key from snapshot timestamp for lookup
       const ts = new Date(s.timestamp);
