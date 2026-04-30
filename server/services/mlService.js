@@ -94,7 +94,7 @@ const get48HourForecast = async (
           hour: new Date().getHours(),
           month: new Date().getMonth() + 1,
         },
-        { timeout: 8000 },
+        { timeout: 25000 },
       );
       // ML-ADDITION: pass through lower/upper confidence bands from LSTM response
       return (res.data.forecast || []).map((f) => ({
