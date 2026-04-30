@@ -302,9 +302,10 @@ const saveHourlySnapshots = async (documents) => {
 
 const get10DayHourlySnapshots = async (city) => {
   const rx = new RegExp(`^${city.trim()}$`, "i");
-  const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
 
-  return HourlySnapshot.find({ city: rx, timestamp: { $gte: cutoff } })
+  return HourlySnapshot.find({ city: rx, timestamp: { $gte: cutoff, $lte: now } })
     .sort({ timestamp: 1 })
     .lean();
 };
