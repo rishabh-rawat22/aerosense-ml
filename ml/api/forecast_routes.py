@@ -228,6 +228,18 @@ async def health():
     }
 
 
+@app.get("/force-refresh")
+async def force_refresh():
+    """Manually trigger the forecast cache background job."""
+    import threading
+    try:
+        from scheduler.cron_jobs import job_forecast_cache
+        threading.Thread(target=job_forecast_cache, daemon=True).start()
+        return {"status": "ok", "message": "ML forecast cache refresh triggered in background"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest, request: Request):
     """
