@@ -14,6 +14,12 @@ connectDB().then(() => {
   const { startCronJob } = require("./jobs/syncCPCB");
   startCronJob();
 
+  // Start AQI email alert cron (checks every 3h in prod, every min in dev)
+  const { startAqiAlertCron } = require("./jobs/aqiAlertCron");
+  startAqiAlertCron({
+    runImmediately: process.env.NODE_ENV === "development",
+  });
+
   // Self-ping every 14 minutes to prevent Render free tier sleep
   setInterval(
     () => {
