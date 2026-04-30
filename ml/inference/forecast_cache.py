@@ -107,7 +107,7 @@ def write_forecast(db, city: str, forecast: list[dict], model_version: str):
 
     if ops:
         try:
-            result = db["hourlySnapshots"].bulk_write(ops, ordered=False)
+            result = db["hourlysnapshots"].bulk_write(ops, ordered=False)
             logger.info(
                 f"Stamped {len(ops)} predicted hours into hourlySnapshots for '{city}' "
                 f"(upserted={result.upserted_count} modified={result.modified_count})"
