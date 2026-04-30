@@ -54,12 +54,9 @@ def write_forecast(db, city: str, forecast: list[dict], model_version: str):
     """
     col         = db["ml_forecasts"]
     now         = datetime.now(timezone.utc)
-    valid_until = now + timedelta(hours=2)
-
     doc = {
         "city":          city,
         "generated_at":  now,
-        "valid_until":   valid_until,
         "model_version": model_version,
         "forecast":      forecast,
     }
@@ -194,12 +191,7 @@ def get_cached_forecast(db, city: str) -> Optional[dict]:
     if not doc:
         return None
 
-    valid_until = doc.get("valid_until")
-    if valid_until and valid_until.tzinfo is None:
-        valid_until = valid_until.replace(tzinfo=timezone.utc)
-    if valid_until and datetime.now(timezone.utc) > valid_until:
-        logger.warning(f"Cached forecast for '{city}' expired")
-        return None
+
 
     return doc
 

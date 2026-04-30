@@ -183,12 +183,7 @@ async def _read_cached_forecast(city: str) -> Optional[dict]:
     if not doc:
         return None
 
-    valid_until = doc.get("valid_until")
-    if valid_until:
-        if valid_until.tzinfo is None:
-            valid_until = valid_until.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) > valid_until:
-            return None   # expired
+
 
     return doc
 
@@ -301,9 +296,7 @@ async def get_forecast_direct(city: str):
             "generated_at":  cached.get("generated_at", datetime.now(timezone.utc)).isoformat()
                              if hasattr(cached.get("generated_at"), "isoformat")
                              else str(cached.get("generated_at", "")),
-            "valid_until":   cached.get("valid_until", "").isoformat()
-                             if hasattr(cached.get("valid_until"), "isoformat")
-                             else str(cached.get("valid_until", "")),
+
             "model_version": cached.get("model_version", "unknown"),
             "forecast":      cached.get("forecast", []),
         }
@@ -317,7 +310,7 @@ async def get_forecast_direct(city: str):
         return {
             "station_id":    city,
             "generated_at":  now.isoformat(),
-            "valid_until":   (now + timedelta(hours=2)).isoformat(),
+
             "model_version": version,
             "forecast":      forecast,
         }
