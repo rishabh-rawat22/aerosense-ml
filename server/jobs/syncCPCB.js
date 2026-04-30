@@ -39,7 +39,8 @@ if (isManualRun) {
   const startCronJob = () => {
     cron.schedule("*/15 * * * *", runSync, { timezone: "Asia/Kolkata" });
     logger.info("📡 OpenAQ sync cron registered — runs hourly at :05 IST");
-    runSync(); // Run immediately on startup
+    // Delay the initial sync by 10 seconds to allow Render's port scanner to detect the server first
+    setTimeout(runSync, 10000);
   };
 
   module.exports = { startCronJob, runSync };
