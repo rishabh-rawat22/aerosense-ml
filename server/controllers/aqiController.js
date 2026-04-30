@@ -119,7 +119,8 @@ const get10DayHistory = async (city) => {
     getMLForecastMap(city),
   ]);
 
-  const now = new Date();
+  // Use IST-shifted 'now' to match snapshots in DB
+  const now = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   return snapshots
     .filter((s) => new Date(s.timestamp) <= now)
     .map((s) => {

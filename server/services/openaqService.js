@@ -302,7 +302,8 @@ const saveHourlySnapshots = async (documents) => {
 
 const get10DayHourlySnapshots = async (city) => {
   const rx = new RegExp(`^${city.trim()}$`, "i");
-  const now = new Date();
+  // Shift 'now' by 5.5h to match the shifted timestamps stored in DB
+  const now = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   const cutoff = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
 
   return HourlySnapshot.find({ city: rx, timestamp: { $gte: cutoff, $lte: now } })
