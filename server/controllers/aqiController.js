@@ -119,25 +119,28 @@ const get10DayHistory = async (city) => {
     getMLForecastMap(city),
   ]);
 
-  return snapshots.map((s) => {
-    // Build IST key from snapshot timestamp for lookup
-    const ts = new Date(s.timestamp);
-    const istTs = new Date(ts.getTime() + 5.5 * 60 * 60 * 1000);
-    const key = istTs.toISOString().slice(0, 13);
+  const now = new Date();
+  return snapshots
+    .filter((s) => new Date(s.timestamp) <= now)
+    .map((s) => {
+      // Build IST key from snapshot timestamp for lookup
+      const ts = new Date(s.timestamp);
+      const istTs = new Date(ts.getTime() + 5.5 * 60 * 60 * 1000);
+      const key = istTs.toISOString().slice(0, 13);
 
-    // Use predicted from snapshot if already stored, else from ml_forecasts map
-    const predicted = s.predicted ?? predictedMap[key] ?? null;
+      // Use predicted from snapshot if already stored, else from ml_forecasts map
+      const predicted = s.predicted ?? predictedMap[key] ?? null;
 
-    return {
-      timestamp: s.timestamp,
-      date: s.date,
-      hour: s.hour,
-      label: `${s.date} ${String(s.hour).padStart(2, "0")}:00`,
-      actual: s.actual,
-      predicted,
-      dataPoints: s.stationCount,
-    };
-  });
+      return {
+        timestamp: s.timestamp,
+        date: s.date,
+        hour: s.hour,
+        label: `${s.date} ${String(s.hour).padStart(2, "0")}:00`,
+        actual: s.actual,
+        predicted,
+        dataPoints: s.stationCount,
+      };
+    });
 };
 
 const getAdvisory = (categoryLabel) => {
