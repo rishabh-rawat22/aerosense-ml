@@ -96,15 +96,25 @@ const get48HourForecast = async (
         },
         { timeout: 25000 },
       );
-      // ML-ADDITION: pass through lower/upper confidence bands from LSTM response
-      return (res.data.forecast || []).map((f) => ({
-        time: f.time,
-        hour: f.hour,
-        aqi: f.aqi,
-        lower: f.lower ?? null,
-        upper: f.upper ?? null,
-        modelType: (f.modelType && f.modelType.includes("baseline")) ? "statistical_baseline" : (f.modelType || "ml_model"),
-      }));
+      const now = new Date();
+      now.setMinutes(0, 0, 0);
+      
+      let mlForecast = (res.data.forecast || [])
+        .filter((f) => new Date(f.time) >= now)
+        .map((f) => ({
+          time: f.time,
+          hour: f.hour,
+          aqi: f.aqi,
+          lower: f.lower ?? null,
+          upper: f.upper ?? null,
+          modelType: (f.modelType && f.modelType.includes("baseline")) ? "statistical_baseline" : (f.modelType || "ml_model"),
+        }));
+
+      if (mlForecast.length === 0) {
+         logger.warn(`All cached ML forecasts for ${district} are in the past, falling back to baseline.`);
+         return generateBaselineForecast(currentAQI);
+      }
+      return mlForecast;
     } catch (err) {
       logger.warn(
         `ML service unreachable (${err.message}), falling back to baseline`,
