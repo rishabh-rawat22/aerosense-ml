@@ -98,7 +98,7 @@ const Dashboard = () => {
               <span className="live-dot" />
               <span>Live · CPCB India</span>
             </div>
-            <button className="refresh-btn" onClick={() => { const p = getLocationParams(); if (p) fetchDashboard(p); }} disabled={loading}>
+            <button className="refresh-btn" onClick={() => { const p = getLocationParams(); if (p) fetchDashboard({ ...p, force: true }); }} disabled={loading}>
               {loading ? '⏳' : '🔄'} Refresh
             </button>
           </div>

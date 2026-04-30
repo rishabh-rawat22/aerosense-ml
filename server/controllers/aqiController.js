@@ -341,7 +341,9 @@ const getDashboard = async (req, res) => {
 
     const cKey = `dashboard:${district.toLowerCase()}`;
     const cached = cache.get(cKey);
-    if (cached) return res.json({ success: true, data: cached, cached: true });
+    const force = req.query.force === "true";
+
+    if (cached && !force) return res.json({ success: true, data: cached, cached: true });
 
     const reading = await getLatestForCity(district);
     if (!reading) {
