@@ -26,6 +26,21 @@ connectDB().then(() => {
         .on("error", (err) => {
           logger.warn(`Self-ping failed: ${err.message}`);
         });
+
+      // Also ping the ML microservice to keep its scheduler alive
+      if (process.env.ML_SERVICE_URL) {
+        const https = require("https");
+        const mlHealthUrl = process.env.ML_SERVICE_URL.replace("/predict", "/health");
+        
+        const req = mlHealthUrl.startsWith("https") ? https : http;
+        req
+          .get(mlHealthUrl, (res) => {
+            logger.info(`ML-ping OK: ${res.statusCode}`);
+          })
+          .on("error", (err) => {
+            logger.warn(`ML-ping failed: ${err.message}`);
+          });
+      }
     },
     14 * 60 * 1000,
   );

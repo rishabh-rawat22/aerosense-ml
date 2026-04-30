@@ -3,13 +3,16 @@
 Training & Fine-Tuning Loop
 ────────────────────────────
 Modes:
-  full   — trains from scratch on all ml_history data (backfill + live)
-  finetune — continues training on last 90 days of live data only
+  full   — trains from scratch on CSV data or all ml_history data
+  finetune — continues training on last 90 days of live data (MongoDB)
 
 Usage:
-    python models/train.py --mode full     --epochs 50
+    # Train from local CSVs (recommended for initial training)
+    python models/train.py --mode full --data-dir ../data --epochs 50
+    python models/train.py --mode full --data-dir ../data --city Delhi --epochs 50
+
+    # Fine-tune from live MongoDB data (after deployment)
     python models/train.py --mode finetune --epochs 10
-    python models/train.py --mode full     --city Delhi --epochs 50
 """
 
 import os
@@ -41,7 +44,7 @@ from features.feature_engineering import (
 from models.lstm_model import AQILSTMForecaster, PinballLoss, save_checkpoint, load_checkpoint
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MONGO_URI       = os.environ["MONGO_URI"]
+MONGO_URI       = os.environ.get("MONGO_URI", "")  # optional for CSV-based training
 CHECKPOINT_DIR  = Path(os.getenv("MODEL_CHECKPOINT_DIR", str(ROOT / "models" / "checkpoints")))
 SCALER_DIR      = CHECKPOINT_DIR / "scalers"
 BATCH_SIZE      = 64
@@ -50,11 +53,12 @@ LR_FINETUNE     = 1e-4
 FINETUNE_DAYS   = 90
 DEVICE          = "cuda" if torch.cuda.is_available() else "cpu"
 MIN_TRAIN_ROWS  = SEQ_LEN + HORIZON + 10   # minimum rows needed to train
+IST_OFFSET      = timedelta(hours=5, minutes=30)
 
 
 def fetch_city_data(db, city: str, days: Optional[int] = None) -> Optional[object]:
     """
-    Fetch ml_history rows for one city, optionally restricted to last N days.
+    Fetch ml_history rows for one city from MongoDB, optionally restricted to last N days.
 
     Args:
         db:   PyMongo database handle.
@@ -79,6 +83,76 @@ def fetch_city_data(db, city: str, days: Optional[int] = None) -> Optional[objec
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     logger.info(f"{city}: fetched {len(df):,} rows from ml_history")
     return df
+
+
+def fetch_city_data_from_csv(data_dir: Path, city: str) -> Optional[object]:
+    """
+    Load training data for a city directly from local CPCB CSV files.
+    No MongoDB needed — reads CSVs, normalizes columns, computes AQI.
+
+    Args:
+        data_dir: Path to the data/ directory containing station CSVs.
+        city:     City name to load data for.
+
+    Returns:
+        Pandas DataFrame or None if insufficient data.
+    """
+    import pandas as pd
+    from data.backfill_cpcb_csv import (
+        load_station_info, load_station_csv,
+        aggregate_city_hour, REQUIRED_POLLUTANTS,
+    )
+
+    station_info = load_station_info(data_dir)
+    city_stations = station_info[
+        station_info["city"].str.lower() == city.strip().lower()
+    ]
+
+    if city_stations.empty:
+        logger.warning(f"{city}: no stations found in stations_info.csv")
+        return None
+
+    city_dfs = []
+    for _, station in city_stations.iterrows():
+        csv_path = data_dir / f"{station['file_name']}.csv"
+        if not csv_path.exists():
+            continue
+        df = load_station_csv(csv_path)
+        if df is not None and not df.empty:
+            city_dfs.append(df)
+
+    if not city_dfs:
+        logger.warning(f"{city}: no valid CSV data found")
+        return None
+
+    # Aggregate multiple stations → city-level hourly data with AQI
+    agg_df = aggregate_city_hour(city_dfs, city)
+
+    if agg_df.empty or len(agg_df) < MIN_TRAIN_ROWS:
+        logger.warning(f"{city}: only {len(agg_df)} rows from CSVs — skipping (need {MIN_TRAIN_ROWS})")
+        return None
+
+    # Ensure output matches fetch_city_data format: timestamp(UTC), city, aqi, pm25, ...
+    keep_cols = ["timestamp", "city", "aqi", "pm25", "pm10", "no2", "so2", "co", "o3"]
+    for col in keep_cols:
+        if col not in agg_df.columns:
+            agg_df[col] = np.nan
+
+    result = agg_df[keep_cols].copy()
+    result["aqi"] = result["aqi"].astype(float)
+    result = result.sort_values("timestamp").reset_index(drop=True)
+
+    date_range = f"{result['timestamp'].min().date()} → {result['timestamp'].max().date()}"
+    logger.info(f"{city}: loaded {len(result):,} rows from {len(city_dfs)} CSVs ({date_range})")
+    return result
+
+
+def get_all_cities_from_csv(data_dir: Path) -> list[str]:
+    """Return all distinct city names from stations_info.csv."""
+    import pandas as pd
+    from data.backfill_cpcb_csv import load_station_info
+    station_info = load_station_info(data_dir)
+    return sorted(station_info["city"].unique().tolist())
 
 
 def train_city(
@@ -223,7 +297,12 @@ def get_all_cities(db) -> list[str]:
     return sorted(db["ml_history"].distinct("city"))
 
 
-def run_training(mode: str, epochs: int, target_city: Optional[str] = None):
+def run_training(
+    mode: str,
+    epochs: int,
+    target_city: Optional[str] = None,
+    data_dir: Optional[str] = None,
+):
     """
     Main training entry point.
 
@@ -231,22 +310,54 @@ def run_training(mode: str, epochs: int, target_city: Optional[str] = None):
         mode:        'full' | 'finetune'.
         epochs:      Training epochs.
         target_city: Train only this city (default: all cities).
+        data_dir:    Path to local CSV data directory. If provided, trains
+                     from CSVs instead of MongoDB (recommended for initial training).
     """
-    client  = MongoClient(MONGO_URI)
-    db      = client.get_default_database()
     version = datetime.now(timezone.utc).strftime("%Y%m%d")
+    use_csv = data_dir is not None
 
-    cities = [target_city] if target_city else get_all_cities(db)
-    logger.info(f"Training mode={mode}, epochs={epochs}, cities={len(cities)}, device={DEVICE}")
+    # Determine data source
+    client = None
+    db = None
+    csv_path = None
 
+    if use_csv:
+        csv_path = Path(data_dir).resolve()
+        if not (csv_path / "stations_info.csv").exists():
+            logger.error(f"stations_info.csv not found in {csv_path}")
+            return
+        if target_city:
+            cities = [target_city]
+        else:
+            cities = get_all_cities_from_csv(csv_path)
+        logger.info(f"Training from LOCAL CSVs: {csv_path}")
+    else:
+        if not MONGO_URI:
+            logger.error("MONGO_URI not set. Use --data-dir for CSV training or set MONGO_URI.")
+            return
+        client = MongoClient(MONGO_URI)
+        db = client.get_default_database()
+        cities = [target_city] if target_city else get_all_cities(db)
+        logger.info(f"Training from MongoDB")
+
+    logger.info(f"mode={mode}, epochs={epochs}, cities={len(cities)}, device={DEVICE}")
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
     days = FINETUNE_DAYS if mode == "finetune" else None
+    success_count = 0
+    fail_count = 0
 
-    for city in cities:
-        logger.info(f"═══ Processing: {city} ═══")
-        df = fetch_city_data(db, city, days=days)
+    for i, city in enumerate(cities, 1):
+        logger.info(f"═══ [{i}/{len(cities)}] Processing: {city} ═══")
+
+        # Fetch data from CSV or MongoDB
+        if use_csv:
+            df = fetch_city_data_from_csv(csv_path, city)
+        else:
+            df = fetch_city_data(db, city, days=days)
+
         if df is None:
+            fail_count += 1
             continue
 
         existing_model  = None
@@ -270,17 +381,24 @@ def run_training(mode: str, epochs: int, target_city: Optional[str] = None):
                 existing_model=existing_model, existing_scaler=existing_scaler,
             )
             save_city_artifacts(city, model, scaler, version)
+            success_count += 1
         except Exception as exc:
             logger.error(f"Training failed for {city}: {exc}")
+            fail_count += 1
 
-    client.close()
-    logger.success(f"All cities processed for mode={mode}")
+    if client:
+        client.close()
+    logger.success(
+        f"Training complete — {success_count} cities OK, {fail_count} skipped/failed (mode={mode})"
+    )
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Train/fine-tune AQI LSTM")
-    ap.add_argument("--mode",   choices=["full", "finetune"], default="full")
-    ap.add_argument("--epochs", type=int, default=50)
-    ap.add_argument("--city",   default=None, help="Single city (default: all)")
+    ap.add_argument("--mode",     choices=["full", "finetune"], default="full")
+    ap.add_argument("--epochs",   type=int, default=50)
+    ap.add_argument("--city",     default=None, help="Single city (default: all)")
+    ap.add_argument("--data-dir", default=None,
+                    help="Path to local CSV data directory (skips MongoDB, recommended for initial training)")
     args = ap.parse_args()
-    run_training(mode=args.mode, epochs=args.epochs, target_city=args.city)
+    run_training(mode=args.mode, epochs=args.epochs, target_city=args.city, data_dir=args.data_dir)

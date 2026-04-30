@@ -103,7 +103,7 @@ const get48HourForecast = async (
         aqi: f.aqi,
         lower: f.lower ?? null,
         upper: f.upper ?? null,
-        modelType: f.modelType || "ml_model",
+        modelType: (f.modelType && f.modelType.includes("baseline")) ? "statistical_baseline" : (f.modelType || "ml_model"),
       }));
     } catch (err) {
       logger.warn(

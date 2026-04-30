@@ -111,7 +111,7 @@ def add_lag_and_rolling(df: pd.DataFrame) -> pd.DataFrame:
 
     # Backfill lags at the beginning of history
     lag_cols = ["lag_24h_aqi", "lag_48h_aqi", "lag_168h_aqi"]
-    df[lag_cols] = df[lag_cols].fillna(method="bfill").fillna(df["aqi"].median())
+    df[lag_cols] = df[lag_cols].bfill().fillna(df["aqi"].median())
 
     return df
 
@@ -135,8 +135,8 @@ def impute_pollutants(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = 0.0
     df[poll_cols] = (
         df[poll_cols]
-        .fillna(method="ffill")
-        .fillna(method="bfill")
+        .ffill()
+        .bfill()
         .fillna(0.0)
     )
     return df
@@ -162,7 +162,7 @@ def reindex_hourly(df: pd.DataFrame) -> pd.DataFrame:
     df.index.name = "timestamp"
 
     # Forward-fill up to 6 hours for short gaps
-    df = df.fillna(method="ffill", limit=6).fillna(0)
+    df = df.ffill(limit=6).fillna(0)
     df = df.reset_index()
     return df
 

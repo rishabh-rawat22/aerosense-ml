@@ -8,7 +8,7 @@ const Tip = ({ active, payload }) => {
     <div className="chart-tooltip">
       <div className="tooltip-aqi">{aqi} AQI</div>
       <div className="tooltip-cat">{category?.label}</div>
-      <div className="tooltip-model">{modelType === 'statistical_baseline' ? '📊 Baseline model' : '🤖 ML model'}</div>
+      <div className="tooltip-model">{(modelType && modelType.includes('baseline')) ? '📊 Baseline model' : '🤖 ML model'}</div>
     </div>
   );
 };
@@ -30,8 +30,8 @@ const ForecastChart = ({ forecast = [], modelType }) => {
         <div>
           <h3 className="chart-title">48-Hour AQI Forecast</h3>
           <div className="chart-source-tag">
-            {modelType === 'statistical_baseline'
-              ? '📊 Statistical baseline model — connect ML service for AI predictions'
+            {(forecast?.[0]?.modelType && forecast[0].modelType.includes('baseline'))
+              ? '📊 Statistical baseline predictions — AI model not available for this city'
               : '🤖 ML model predictions'}
           </div>
         </div>
