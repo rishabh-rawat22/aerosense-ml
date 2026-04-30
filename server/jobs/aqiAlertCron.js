@@ -5,49 +5,20 @@ const User = require("../models/User");
 const { HourlySnapshot } = require("../services/openaqService");
 const { sendAqiAlert } = require("../services/emailService");
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** AQI threshold above which an alert email is sent. */
+// AQI threshold above which an alert email is sent.
 const AQI_ALERT_THRESHOLD = 200;
 
-/**
- * Cron schedule strings.
- *
- * Every 3 hours:   "0 */3 * * *"   -> runs at 00:00, 03:00, 06:00 ... 21:00
- * Daily at 8 AM:   "0 8 * * *"
- * Every minute:    "* * * * *"      <- useful during local development/testing
- */
 const SCHEDULES = {
   EVERY_3_HOURS: "0 */3 * * *",
-  DAILY_8AM:     "0 8 * * *",
-  EVERY_MINUTE:  "* * * * *", // dev only
+  DAILY_8AM: "0 8 * * *",
+  EVERY_MINUTE: "* * * * *",
 };
 
-// ---------------------------------------------------------------------------
-// Core job logic (exported separately so you can unit-test it without cron)
-// ---------------------------------------------------------------------------
-
-/**
- * Runs the full AQI check-and-notify pipeline.
- *
- * Pipeline:
- *  1. Fetch all opted-in users that have a known district.
- *  2. Group them by district (O(n) -- one pass over the user array).
- *  3. For each unique district, fetch only the LATEST snapshot (one DB query).
- *  4. If AQI > threshold, fire alert emails concurrently (Promise.allSettled).
- *  5. Log a concise summary; individual failures don't abort the batch.
- *
- * @returns {Promise<void>}
- */
+// Core job logic
 async function runAqiAlertJob() {
   const jobStart = Date.now();
-  console.log(`\n[AqiAlertCron] >>  Job started at ${new Date().toISOString()}`);
+  console.log("[AqiAlertCron] Job started at " + new Date().toISOString());
 
-  // ------------------------------------------------------------------
-  // Step 1 - Fetch opted-in users with a known district
-  // ------------------------------------------------------------------
   let users;
   try {
     users = await User.find(
@@ -55,178 +26,118 @@ async function runAqiAlertJob() {
         notificationsEnabled: true,
         lastKnownDistrict: { $exists: true, $nin: [null, ""] },
       },
-      "email name lastKnownDistrict" // project only the fields we need
+      "email name lastKnownDistrict"
     ).lean();
   } catch (err) {
-    console.error("[AqiAlertCron] X  Failed to fetch users:", err.message);
+    console.error("[AqiAlertCron] Failed to fetch users:", err.message);
     return;
   }
 
   if (!users.length) {
-    console.log("[AqiAlertCron] i  No opted-in users found. Job complete.");
+    console.log("[AqiAlertCron] No opted-in users found. Job complete.");
     return;
   }
 
-  console.log(`[AqiAlertCron] i  ${users.length} opted-in user(s) found.`);
+  console.log("[AqiAlertCron] " + users.length + " opted-in user(s) found.");
 
-  // ------------------------------------------------------------------
-  // Step 2 - Group users by district  ->  { "Delhi": [user1, user2], ... }
-  // ------------------------------------------------------------------
-  /** @type {Map<string, Array<{email:string, name:string}>>} */
-  const districtMap = new Map();
-
-  for (const user of users) {
-    const district = user.lastKnownDistrict.trim();
+  // Group users by district
+  var districtMap = new Map();
+  for (var i = 0; i < users.length; i++) {
+    var district = users[i].lastKnownDistrict.trim();
     if (!districtMap.has(district)) districtMap.set(district, []);
-    districtMap.get(district).push({ email: user.email, name: user.name });
+    districtMap.get(district).push({ email: users[i].email, name: users[i].name });
   }
 
-  const uniqueDistricts = [...districtMap.keys()];
-  console.log(
-    `[AqiAlertCron] i  ${uniqueDistricts.length} unique district(s): ${uniqueDistricts.join(", ")}`
-  );
+  var uniqueDistricts = Array.from(districtMap.keys());
+  console.log("[AqiAlertCron] " + uniqueDistricts.length + " unique district(s): " + uniqueDistricts.join(", "));
 
-  // ------------------------------------------------------------------
-  // Step 3 & 4 - Per-district: fetch latest AQI -> decide -> send emails
-  // ------------------------------------------------------------------
-  let totalAlertsSent = 0;
-  let totalAlertsFailed = 0;
-  let districtsAboveThreshold = 0;
+  var totalAlertsSent = 0;
+  var totalAlertsFailed = 0;
+  var districtsAboveThreshold = 0;
 
-  for (const district of uniqueDistricts) {
-    // One DB query per district (not per user) -- this is the key optimisation.
-    let snapshot;
+  for (var d = 0; d < uniqueDistricts.length; d++) {
+    var dist = uniqueDistricts[d];
+    var snapshot;
     try {
       snapshot = await HourlySnapshot.findOne(
-        { city: district },
+        { city: dist },
         "actual timestamp"
       )
-        .sort({ timestamp: -1 }) // most recent first
+        .sort({ timestamp: -1 })
         .lean();
     } catch (err) {
-      console.error(
-        `[AqiAlertCron] X  Snapshot query failed for "${district}":`,
-        err.message
-      );
-      continue; // skip this district, move on
+      console.error("[AqiAlertCron] Snapshot query failed for " + dist + ":", err.message);
+      continue;
     }
 
     if (!snapshot) {
-      console.warn(`[AqiAlertCron] !  No snapshot found for district "${district}". Skipping.`);
+      console.warn("[AqiAlertCron] No snapshot found for district " + dist + ". Skipping.");
       continue;
     }
 
-    const aqi = snapshot.actual;
-    console.log(`[AqiAlertCron] i  ${district} -> AQI ${aqi}`);
+    var aqi = snapshot.actual;
+    console.log("[AqiAlertCron] " + dist + " -> AQI " + aqi);
 
     if (aqi <= AQI_ALERT_THRESHOLD) {
-      console.log(`[AqiAlertCron]    OK  AQI is acceptable. No alert needed.`);
+      console.log("[AqiAlertCron] AQI is acceptable. No alert needed.");
       continue;
     }
 
-    // AQI is above threshold -- send alerts to all users in this district.
     districtsAboveThreshold++;
-    const usersInDistrict = districtMap.get(district);
+    var usersInDistrict = districtMap.get(dist);
 
-    console.log(
-      `[AqiAlertCron]    !  AQI ${aqi} exceeds threshold (${AQI_ALERT_THRESHOLD}). ` +
-      `Sending ${usersInDistrict.length} alert(s)...`
+    console.log("[AqiAlertCron] AQI " + aqi + " exceeds threshold (" + AQI_ALERT_THRESHOLD + "). Sending " + usersInDistrict.length + " alert(s)...");
+
+    var results = await Promise.allSettled(
+      usersInDistrict.map(function(u) {
+        return sendAqiAlert({ to: u.email, name: u.name, district: dist, aqi: aqi });
+      })
     );
 
-    // Fire all emails concurrently; Promise.allSettled never rejects.
-    const results = await Promise.allSettled(
-      usersInDistrict.map(({ email, name }) =>
-        sendAqiAlert({ to: email, name, district, aqi })
-      )
-    );
-
-    // Tally outcomes
-    for (let i = 0; i < results.length; i++) {
-      const { status, reason } = results[i];
-      const { email } = usersInDistrict[i];
-
-      if (status === "fulfilled") {
+    for (var r = 0; r < results.length; r++) {
+      if (results[r].status === "fulfilled") {
         totalAlertsSent++;
-        console.log(`[AqiAlertCron]       >>  Alert sent -> ${email}`);
+        console.log("[AqiAlertCron] Alert sent -> " + usersInDistrict[r].email);
       } else {
         totalAlertsFailed++;
-        console.error(
-          `[AqiAlertCron]       X  Failed to send -> ${email}:`,
-          reason?.message ?? reason
-        );
+        console.error("[AqiAlertCron] Failed to send -> " + usersInDistrict[r].email + ":", results[r].reason && results[r].reason.message || results[r].reason);
       }
     }
   }
 
-  // ------------------------------------------------------------------
-  // Step 5 - Summary log
-  // ------------------------------------------------------------------
-  const elapsed = ((Date.now() - jobStart) / 1000).toFixed(2);
-  console.log(
-    `[AqiAlertCron] #  Job finished in ${elapsed}s | ` +
-    `Districts above threshold: ${districtsAboveThreshold} | ` +
-    `Alerts sent: ${totalAlertsSent} | ` +
-    `Failures: ${totalAlertsFailed}\n`
-  );
+  var elapsed = ((Date.now() - jobStart) / 1000).toFixed(2);
+  console.log("[AqiAlertCron] Job finished in " + elapsed + "s | Districts above threshold: " + districtsAboveThreshold + " | Alerts sent: " + totalAlertsSent + " | Failures: " + totalAlertsFailed);
 }
 
-// ---------------------------------------------------------------------------
 // Scheduler factory
-// ---------------------------------------------------------------------------
+function startAqiAlertCron(options) {
+  options = options || {};
+  var schedule = options.schedule || (process.env.NODE_ENV === "development" ? SCHEDULES.EVERY_MINUTE : SCHEDULES.EVERY_3_HOURS);
 
-/**
- * Registers and starts the AQI alert cron job.
- *
- * @param {object} [options]
- * @param {string} [options.schedule] - A valid cron expression.
- *   Defaults to every 3 hours in production, every minute in development.
- * @param {boolean} [options.runImmediately] - If true, also fires once right
- *   now so you don't have to wait for the first scheduled tick.
- * @returns {cron.ScheduledTask} The cron task instance (call .stop() to halt).
- */
-function startAqiAlertCron({ schedule, runImmediately = false } = {}) {
-  const resolvedSchedule =
-    schedule ??
-    (process.env.NODE_ENV === "development"
-      ? SCHEDULES.EVERY_MINUTE   // tight feedback loop while developing
-      : SCHEDULES.EVERY_3_HOURS);
-
-  if (!cron.validate(resolvedSchedule)) {
-    throw new Error(
-      `[AqiAlertCron] Invalid cron expression: "${resolvedSchedule}"`
-    );
+  if (!cron.validate(schedule)) {
+    throw new Error("[AqiAlertCron] Invalid cron expression: " + schedule);
   }
 
-  console.log(
-    `[AqiAlertCron] Scheduler registered with expression: "${resolvedSchedule}"`
-  );
+  console.log("[AqiAlertCron] Scheduler registered with expression: " + schedule);
 
-  const task = cron.schedule(resolvedSchedule, async () => {
-    try {
-      await runAqiAlertJob();
-    } catch (err) {
-      // Top-level safety net -- ensures an unexpected throw doesn't crash the
-      // process and silently kills future ticks.
-      console.error("[AqiAlertCron] X  Unhandled error in job:", err);
-    }
+  var task = cron.schedule(schedule, function() {
+    runAqiAlertJob().catch(function(err) {
+      console.error("[AqiAlertCron] Unhandled error in job:", err);
+    });
   });
 
-  if (runImmediately) {
-    console.log("[AqiAlertCron] runImmediately=true -> firing job now...");
-    runAqiAlertJob().catch((err) =>
-      console.error("[AqiAlertCron] X  Immediate run failed:", err)
-    );
+  if (options.runImmediately) {
+    console.log("[AqiAlertCron] runImmediately=true, firing job now...");
+    runAqiAlertJob().catch(function(err) {
+      console.error("[AqiAlertCron] Immediate run failed:", err);
+    });
   }
 
   return task;
 }
 
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
-
 module.exports = {
-  startAqiAlertCron,
-  runAqiAlertJob, // export for unit testing / manual trigger
-  SCHEDULES,
+  startAqiAlertCron: startAqiAlertCron,
+  runAqiAlertJob: runAqiAlertJob,
+  SCHEDULES: SCHEDULES,
 };
