@@ -80,7 +80,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AQI Alert – AeroSense</title>
+  <title>AQI Alert - AeroSense</title>
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif;">
 
@@ -102,7 +102,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
                         padding:32px 40px;text-align:center;">
               <p style="margin:0;font-size:28px;font-weight:800;
                          letter-spacing:-0.5px;color:#ffffff;">
-                🌬️ AeroSense
+                 AeroSense
               </p>
               <p style="margin:8px 0 0;font-size:13px;color:#94a3b8;
                          letter-spacing:2px;text-transform:uppercase;">
@@ -120,7 +120,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
                 <p style="margin:0;font-size:13px;font-weight:600;
                             color:#fff;letter-spacing:1.5px;
                             text-transform:uppercase;opacity:0.85;">
-                  Current AQI – ${district}
+                  Current AQI - ${district}
                 </p>
                 <p style="margin:4px 0 0;font-size:56px;font-weight:900;
                             color:#fff;line-height:1;">
@@ -157,7 +157,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
                     <p style="margin:0 0 10px;font-size:14px;font-weight:700;
                                color:#9a3412;letter-spacing:0.5px;
                                text-transform:uppercase;">
-                      ⚠️ Health Advisory
+                      [!] Health Advisory
                     </p>
                     <ul style="margin:0;padding-left:20px;
                                font-size:14px;color:#431407;line-height:1.9;">
@@ -186,7 +186,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
                        style="display:inline-block;padding:12px 28px;
                               font-size:14px;font-weight:600;color:#ffffff;
                               text-decoration:none;letter-spacing:0.3px;">
-                      View Live AQI Dashboard →
+                      View Live AQI Dashboard ->
                     </a>
                   </td>
                 </tr>
@@ -199,7 +199,7 @@ function buildAqiAlertHtml({ name, district, aqi }) {
             <td style="background:#f8fafc;padding:20px 40px;
                         border-top:1px solid #e2e8f0;text-align:center;">
               <p style="margin:0 0 6px;font-size:12px;color:#94a3b8;">
-                Measured on ${timestamp} (IST) · Data source: Government CPCB Sensors
+                Measured on ${timestamp} (IST) . Data source: Government CPCB Sensors
               </p>
               <p style="margin:0;font-size:12px;color:#94a3b8;">
                 You can disable these alerts in your
@@ -240,7 +240,7 @@ async function sendAqiAlert({ to, name, district, aqi }) {
   const mailOptions = {
     from: process.env.EMAIL_FROM || `"AeroSense Alerts" <${process.env.EMAIL_USER}>`,
     to,
-    subject: `⚠️ Poor Air Quality Alert for ${district} – AQI ${aqi} (${label})`,
+    subject: `[!] Poor Air Quality Alert for ${district} - AQI ${aqi} (${label})`,
     html: buildAqiAlertHtml({ name, district, aqi }),
     // Plain-text fallback for email clients that block HTML
     text: [
