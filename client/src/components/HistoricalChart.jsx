@@ -26,47 +26,61 @@ const Tip = ({ active, payload, label }) => {
 };
 
 const HistoricalChart = ({ history = [], avgAccuracy, source }) => {
-  const chartData = useMemo(
-    () =>
-      history.map((d) => ({
-        // Use label "2026-04-20 14:00" if available, else fall back to date
-        label:
-          d.label ||
-          new Date(d.date).toLocaleDateString("en-IN", {
+  const chartData = useMemo(() => {
+    const data = history.map((d) => ({
+      // Use label "2026-04-20 14:00" if available, else fall back to date
+      label:
+        d.label ||
+        new Date(d.date).toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "short",
+        }),
+      // Short display for X axis: "20 Apr 14:00"
+      xLabel: d.label
+        ? (() => {
+            const [date, time] = d.label.split(" ");
+            const [year, month, day] = date.split("-");
+            const months = [
+              "Jan",
+              "Feb",
+              "Mar",
+              "Apr",
+              "May",
+              "Jun",
+              "Jul",
+              "Aug",
+              "Sep",
+              "Oct",
+              "Nov",
+              "Dec",
+            ];
+            return `${parseInt(day)} ${months[parseInt(month) - 1]} ${time}`;
+          })()
+        : new Date(d.date).toLocaleDateString("en-IN", {
             day: "numeric",
             month: "short",
           }),
-        // Short display for X axis: "20 Apr 14:00"
-        xLabel: d.label
-          ? (() => {
-              const [date, time] = d.label.split(" ");
-              const [year, month, day] = date.split("-");
-              const months = [
-                "Jan",
-                "Feb",
-                "Mar",
-                "Apr",
-                "May",
-                "Jun",
-                "Jul",
-                "Aug",
-                "Sep",
-                "Oct",
-                "Nov",
-                "Dec",
-              ];
-              return `${parseInt(day)} ${months[parseInt(month) - 1]} ${time}`;
-            })()
-          : new Date(d.date).toLocaleDateString("en-IN", {
-              day: "numeric",
-              month: "short",
-            }),
-        actual: d.actual,
-        predicted: d.predicted ?? undefined,
-        dataPoints: d.dataPoints,
-      })),
-    [history],
-  );
+      actual: d.actual,
+      predicted: d.predicted ?? undefined,
+      dataPoints: d.dataPoints,
+    }));
+
+    // Find the last actual data point to anchor the prediction line
+    let lastActualIndex = -1;
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].actual != null) {
+        lastActualIndex = i;
+        break;
+      }
+    }
+
+    // Anchor the predicted line to the last actual point to create a continuous graph
+    if (lastActualIndex !== -1) {
+      data[lastActualIndex].predicted = data[lastActualIndex].actual;
+    }
+
+    return data;
+  }, [history]);
 
   const hasPredictions = history.some((d) => d.predicted != null);
 
